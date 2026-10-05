@@ -4,7 +4,7 @@
 #include <WiFiClientSecure.h>
 
 static WebServer* s=nullptr;
-static const char* FW_VERSION="0.8.11";
+static const char* FW_VERSION="0.8.12";
 static const char* MANIFEST_URL="https://raw.githubusercontent.com/keshman74/airScope-airCloud-KNX-Gate/main/latest.json";
 
 static String jsonValue(const String& body,const char* key){
