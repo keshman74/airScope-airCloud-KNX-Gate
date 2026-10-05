@@ -1,0 +1,62 @@
+name: Firmware Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build firmware
+        run: pio run
+
+      - name: Prepare firmware
+        run: cp .pio/build/esp32dev/firmware.bin firmware.bin
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" firmware.bin \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
+
+      - name: Update online manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+
+          cat > latest.json <<EOF2
+          {
+            "version": "${VERSION}",
+            "firmware": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}/firmware.bin"
+          }
+          EOF2
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin main
+          git checkout main
+
+          git add latest.json
+          git commit -m "Update firmware manifest to ${VERSION}" || exit 0
+          git push origin main
