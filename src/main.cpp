@@ -4,6 +4,7 @@
 #include "knx.h"
 #include "webui.h"
 #include "command_queue.h"
+#include "airscope_tcp.h"
 #include <esp_heap_caps.h>
 
 static bool connectWiFi(){
@@ -69,7 +70,11 @@ void setup(){
   if(!wifiOK) recovery();
 
   commandQueueBegin();
-  if(wifiOK) knxBegin();
+
+  if(wifiOK){
+    airScopeTcpBegin();
+    knxBegin();
+  }
 
   Serial.printf("Memory: Free Heap=%u, Min Free Heap=%u, Largest Free Block=%u bytes\n", ESP.getFreeHeap(), ESP.getMinFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
@@ -85,5 +90,6 @@ void loop(){
   webLoop();
   knxLoop();
   commandQueueLoop();
+  airScopeTcpLoop();
   delay(1);
 }

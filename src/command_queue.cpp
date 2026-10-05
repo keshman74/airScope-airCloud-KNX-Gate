@@ -1,6 +1,7 @@
 #include "command_queue.h"
 #include "config.h"
 #include "airscope.h"
+#include "airscope_tcp.h"
 #include "aircloud.h"
 #include "knx.h"
 #include <HTTPClient.h>
@@ -150,11 +151,37 @@ static void execute(const Cmd&c){
   if(a=="CUSTOM_GET"){ if(customUrl.length())customGet(customUrl); return; }
   if(z.type==ZoneType::Custom)return;
 
-  if(a=="MUTE"){ sendNative(z,String("setPlayerCmd:mute:")+(c.value?"1":"0")); return; }
+  if(a=="MUTE"){
+    if(z.type==ZoneType::AirScope){
+      String tcpCmd = String("MCU+MUT+") + (c.value ? "001" : "000");
+
+      if(airScopeTcpConnected(c.zone) && airScopeTcpSend(c.zone,tcpCmd)){
+        Serial.printf("[FAST CONTROL][airScope] MUTE via TCP 8899 zone=%s value=%u\n",
+                      z.name.c_str(),c.value);
+      }else{
+        Serial.printf("[FAST CONTROL][airScope] MUTE TCP unavailable -> HTTP fallback zone=%s\n",
+                      z.name.c_str());
+        airScopeSend(z.ip,String("setPlayerCmd:mute:")+(c.value?"1":"0"));
+      }
+    }else{
+      sendNative(z,String("setPlayerCmd:mute:")+(c.value?"1":"0"));
+    }
+    return;
+  }
 
   if(a=="PLAY_PAUSE"){
-    if(z.type==ZoneType::AirScope) airScopePlayPause(z);
-    else sendNative(z,"setPlayerCmd:onepause");
+    if(z.type==ZoneType::AirScope){
+      if(airScopeTcpConnected(c.zone) && airScopeTcpSend(c.zone,"MCU+PLY+PUS")){
+        Serial.printf("[FAST CONTROL][airScope] PLAY_PAUSE via TCP 8899 zone=%s\n",
+                      z.name.c_str());
+      }else{
+        Serial.printf("[FAST CONTROL][airScope] PLAY_PAUSE TCP unavailable -> HTTP fallback zone=%s\n",
+                      z.name.c_str());
+        airScopePlayPause(z);
+      }
+    }else{
+      sendNative(z,"setPlayerCmd:onepause");
+    }
     return;
   }
 
