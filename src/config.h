@@ -27,6 +27,7 @@ struct Mapping {
   int zone=0;
   String action="NONE";
   String customUrl;
+  String dataType="BIT";
   bool enabled=false;
 };
 

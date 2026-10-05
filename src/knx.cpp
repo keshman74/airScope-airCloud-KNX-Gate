@@ -4,6 +4,7 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 
+#include "airscope_tcp.h"
 static WiFiUDP udp;
 static IPAddress mc(224,0,23,12);
 static bool knxStarted=false;
@@ -68,17 +69,112 @@ void knxLoop(){
   uint8_t apci=((b[fs+7]&3)<<2)|((b[fs+8]>>6)&3);
   if(apci!=2) return;
 
-  uint8_t val=b[fs+8]&0x3f;
-  if(b[fs+6]>1) return;
-
   String g=ga(dst);
-  Serial.printf("KNX %s value=%u\n",g.c_str(),val);
 
   for(int i=0;i<MAX_MAPPINGS;i++){
-    if(mappings[i].enabled && mappings[i].ga==g){
-      if(!commandEnqueue(mappings[i].zone,mappings[i].action,val,mappings[i].customUrl))
+    if(!mappings[i].enabled || mappings[i].ga!=g) continue;
+
+    uint8_t val=0;
+
+    if(mappings[i].dataType=="PERCENT"){
+      // KNX DPT 5.001: 1-byte scaling, raw 0..255 = 0..100%.
+      // NPDU length > 1 means the value is carried in the next APDU byte.
+      if(b[fs+6]<=1 || fs+9>=n){
+        Serial.printf("KNX %s DPT5.001 invalid telegram\n",g.c_str());
+        return;
+      }
+
+      uint8_t raw=b[fs+9];
+      val=(uint8_t)(((uint16_t)raw*100U+127U)/255U);
+
+      Serial.printf(
+        "KNX %s DPT5.001 raw=%u percent=%u%%\n",
+        g.c_str(),raw,val
+      );
+
+    }else if(mappings[i].dataType=="DIM"){
+      // KNX DPT 3.007 relative dimming.
+      // 4-bit value:
+      //   bit 3   = direction/control (1 increase, 0 decrease)
+      //   bits 2:0 = step code
+      //   step code 0 = BREAK/STOP.
+      if(b[fs+6]>1){
+        Serial.printf("KNX %s DPT3.007 invalid telegram\n",g.c_str());
+        return;
+      }
+
+      uint8_t raw=b[fs+8]&0x0f;
+      bool increase=(raw&0x08)!=0;
+      uint8_t stepCode=raw&0x07;
+
+      Serial.printf(
+        "KNX %s DPT3.007 raw=0x%X direction=%s step=%u\n",
+        g.c_str(),
+        raw,
+        increase ? "UP" : "DOWN",
+        stepCode
+      );
+
+      // DPT3 step code 0 means BREAK/STOP.
+      if(stepCode==0){
+        Serial.printf(
+          "KNX %s DPT3.007 STOP\n",
+          g.c_str()
+        );
+
+        airScopeTcpStopVolumeDim(mappings[i].zone);
+        return;
+      }
+
+      // Start continuous volume dimming while the KNX button
+      // remains held. TCP manager generates +/-5% steps every 200 ms.
+      int direction=increase ? 1 : -1;
+
+      if(airScopeTcpStartVolumeDim(
+           mappings[i].zone,
+           direction)){
+        Serial.printf(
+          "KNX %s DPT3.007 DIM START %s via TCP\n",
+          g.c_str(),
+          increase ? "UP" : "DOWN"
+        );
+        return;
+      }
+
+      // TCP unavailable: preserve the existing one-step behaviour
+      // so command_queue can use the normal HTTP fallback.
+      String dimAction=increase ? "VOL_UP" : "VOL_DOWN";
+
+      Serial.printf(
+        "KNX %s DPT3.007 TCP unavailable -> one-step fallback %s\n",
+        g.c_str(),
+        dimAction.c_str()
+      );
+
+      if(!commandEnqueue(
+           mappings[i].zone,
+           dimAction,
+           1,
+           mappings[i].customUrl))
         Serial.println("QUEUE FULL");
+
       return;
+
+    }else{
+      // Existing short-value behaviour for BIT mappings.
+      if(b[fs+6]>1) return;
+      val=b[fs+8]&0x3f;
+
+      Serial.printf("KNX %s value=%u\n",g.c_str(),val);
     }
+
+    if(!commandEnqueue(
+         mappings[i].zone,
+         mappings[i].action,
+         val,
+         mappings[i].customUrl))
+      Serial.println("QUEUE FULL");
+
+    return;
   }
 }

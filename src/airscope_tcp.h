@@ -45,6 +45,10 @@ bool airScopeTcpSend(int zone, const String& command);
 // Multiple fast changes are accumulated and sent respecting
 // the Arylic >=200 ms command interval.
 bool airScopeTcpQueueVolumeStep(int zone, int delta);
+bool airScopeTcpStartVolumeDim(int zone, int direction);
+void airScopeTcpStopVolumeDim(int zone);
+bool airScopeTcpSetVolume(int zone, uint8_t volume);
+bool airScopeTcpQueueVolumeAbsolute(int zone, uint8_t volume);
 
 
 // Diagnostics.

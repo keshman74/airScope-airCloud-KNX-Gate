@@ -207,6 +207,36 @@ static void execute(const Cmd&c){
     return;
   }
 
+  // Absolute volume from KNX DPT 5.001.
+  // knx.cpp has already converted raw 0..255 to 0..100 percent.
+  if(a=="VOLUME"){
+    uint8_t volume = c.value > 100 ? 100 : c.value;
+
+    if(z.type==ZoneType::AirScope){
+      if(airScopeTcpQueueVolumeAbsolute(c.zone, volume)){
+        Serial.printf(
+          "[VOLUME][airScope] absolute=%u%% queued for TCP zone=%s\n",
+          volume,
+          z.name.c_str()
+        );
+      }else{
+        Serial.printf(
+          "[VOLUME][airScope] absolute=%u%% TCP disconnected -> HTTP fallback zone=%s\n",
+          volume,
+          z.name.c_str()
+        );
+        sendNative(z, "setPlayerCmd:vol:" + String(volume));
+      }
+    }else{
+      Serial.printf(
+        "[VOLUME] absolute volume not implemented for this zone type zone=%s\n",
+        z.name.c_str()
+      );
+    }
+
+    return;
+  }
+
   if(c.value!=1)return;
 
   if(a=="PLAY")sendNative(z,"setPlayerCmd:resume");

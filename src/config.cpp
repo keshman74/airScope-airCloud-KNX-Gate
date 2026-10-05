@@ -50,6 +50,8 @@ bool configBegin(){
       int i=getv(l,1).toInt(); if(i>=0&&i<MAX_MAPPINGS){
         mappings[i].enabled=getv(l,2)=="1";mappings[i].ga=getv(l,3);mappings[i].zone=getv(l,4).toInt();
         mappings[i].action=getv(l,5);mappings[i].customUrl=getv(l,6);
+        String dt=getv(l,7);
+        mappings[i].dataType=dt.length()?dt:"BIT";
       }
     }
   }
@@ -64,7 +66,7 @@ bool configSave(){
     f.printf("Z\t%d\t1\t%s\t%d\t%s\t%d\t%u\t%s\t%s\t%s\t%s\t%s\t%s\n",i,enc(zones[i].name).c_str(),(int)zones[i].type,enc(zones[i].ip).c_str(),zones[i].useHttps,zones[i].inputMask,
       enc(zones[i].fbPlay).c_str(),enc(zones[i].fbPause).c_str(),enc(zones[i].fbMute).c_str(),enc(zones[i].fbNetwork).c_str(),enc(zones[i].fbLineIn).c_str(),enc(zones[i].fbBluetooth).c_str());
   for(int i=0;i<MAX_MAPPINGS;i++) if(mappings[i].enabled)
-    f.printf("M\t%d\t1\t%s\t%d\t%s\t%s\n",i,enc(mappings[i].ga).c_str(),mappings[i].zone,enc(mappings[i].action).c_str(),enc(mappings[i].customUrl).c_str());
+    f.printf("M\t%d\t1\t%s\t%d\t%s\t%s\t%s\n",i,enc(mappings[i].ga).c_str(),mappings[i].zone,enc(mappings[i].action).c_str(),enc(mappings[i].customUrl).c_str(),enc(mappings[i].dataType).c_str());
   f.close();
   LittleFS.remove("/config.txt");
   if(!LittleFS.rename("/config.tmp","/config.txt")){Serial.println("Config: rename FAILED");return false;}

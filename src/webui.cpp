@@ -9,7 +9,7 @@
 
 static WebServer server(80);
 static String esc(String s){s.replace("&","&amp;");s.replace("<","&lt;");s.replace(">","&gt;");s.replace("\"","&quot;");s.replace("'","&#39;");return s;}
-static const char* acts[]={"NONE","PLAY_PAUSE","PLAY","PAUSE","NEXT","PREVIOUS","VOL_UP","VOL_DOWN","MUTE",
+static const char* acts[]={"NONE","PLAY_PAUSE","PLAY","PAUSE","NEXT","PREVIOUS","VOL_UP","VOL_DOWN","VOLUME","MUTE",
 "PRESET_1","PRESET_2","PRESET_3","PRESET_4","PRESET_5","PRESET_6","PRESET_7","PRESET_8","PRESET_9","PRESET_10",
 "INPUT_NEXT","INPUT_LINE_IN","INPUT_BLUETOOTH","INPUT_OPTICAL","INPUT_COAXIAL","INPUT_LINE_IN_2","INPUT_USB_DISK","INPUT_PC_USB","CUSTOM_GET"};
 static const char* inLab[]={"Network/WiFi","Line/RCA","Bluetooth","Optical","Coaxial","Line2","USB Disk","PC USB"};
@@ -21,6 +21,13 @@ static String typeOpt(ZoneType t){
 }
 static String actionOpt(const String&cur){
  String x; for(auto a:acts)x+="<option"+String(cur==a?" selected":"")+">"+String(a)+"</option>";return x;
+}
+static String dataTypeOpt(const String& cur){
+ String x;
+ x+="<option value='BIT'"+String(cur=="BIT"?" selected":"")+">1-bit Button</option>";
+ x+="<option value='DIM'"+String(cur=="DIM"?" selected":"")+">4-bit Dimming (DPT 3.007)</option>";
+ x+="<option value='PERCENT'"+String(cur=="PERCENT"?" selected":"")+">1-byte Percent (DPT 5.001)</option>";
+ return x;
 }
 static String zoneOpt(int cur){
  String x;for(int z=0;z<MAX_ZONES;z++)if(zones[z].enabled)x+="<option value='"+String(z)+"'"+String(cur==z?" selected":"")+">"+esc(zones[z].name)+"</option>";return x;
@@ -88,7 +95,9 @@ static void root(){
   String p=String(i); bool on=mappings[i].enabled; String r; r.reserve(3000);
   r+="<div class='row "+String(on?"":"hidden")+"' id='m"+p+"'><input type='hidden' name='me"+p+"' value='"+String(on?"1":"0")+"'><input name='mg"+p+"' value='"+esc(on?mappings[i].ga:String(""))+"' placeholder='3/0/0'><select name='mz"+p+"'>";
   for(int z=0;z<MAX_ZONES;z++){String label=zones[z].enabled?zones[z].name:String("Zone ")+String(z+1);int cur=on?mappings[i].zone:0;r+="<option value='"+String(z)+"'"+String(cur==z?" selected":"")+">"+esc(label)+"</option>";}
-  r+="</select><select name='ma"+p+"'>"+actionOpt(on?mappings[i].action:String("NONE"))+"</select><input class='wide' name='mu"+p+"' value='"+esc(on?mappings[i].customUrl:String(""))+"' placeholder='Custom http(s):// URL'><button type='button' class='danger' onclick=\"del('m"+p+"','me"+p+"')\">DELETE</button></div>"; chunk(r);
+  r+="</select><select name='ma"+p+"'>"+actionOpt(on?mappings[i].action:String("NONE"))+"</select>";
+  r+="<select name='md"+p+"'>"+dataTypeOpt(on?mappings[i].dataType:String("BIT"))+"</select>";
+  r+="<input class='wide' name='mu"+p+"' value='"+esc(on?mappings[i].customUrl:String(""))+"' placeholder='Custom http(s):// URL'><button type='button' class='danger' onclick=\"del('m"+p+"','me"+p+"')\">DELETE</button></div>"; chunk(r);
  }
  chunk("<button type='button' onclick=\"addNext('m','me',"+String(MAX_MAPPINGS)+")\">+ ADD MAPPING</button></div><button class='save' type='submit'>SAVE & RESTART</button></form>");
  chunk("<div class='c'><h2>SYSTEM</h2>Firmware <b>v0.8.12</b><br><b>OTA Online Test: v0.8.12</b><br>Wi-Fi <b>"+String(WiFi.status()==WL_CONNECTED?"Connected":"Recovery AP")+"</b><br>");
@@ -111,7 +120,7 @@ static void save(){
  }
  for(int i=0;i<MAX_MAPPINGS;i++){
   String p=String(i);mappings[i].enabled=server.hasArg("me"+p)&&server.arg("me"+p)=="1";
-  if(mappings[i].enabled){mappings[i].ga=server.arg("mg"+p);mappings[i].zone=server.arg("mz"+p).toInt();mappings[i].action=server.arg("ma"+p);mappings[i].customUrl=server.arg("mu"+p);}
+  if(mappings[i].enabled){mappings[i].ga=server.arg("mg"+p);mappings[i].zone=server.arg("mz"+p).toInt();mappings[i].action=server.arg("ma"+p);mappings[i].customUrl=server.arg("mu"+p);mappings[i].dataType=server.arg("md"+p);if(!mappings[i].dataType.length())mappings[i].dataType="BIT";}
  }
  if(!configSave()){server.send(500,"text/plain","Configuration save failed");return;}
  server.send(200,"text/html; charset=utf-8","<html><body style='font-family:Arial;background:#111;color:#fff;padding:30px'><h2>Configuration saved</h2><p>Gateway is restarting...</p></body></html>");

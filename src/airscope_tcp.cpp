@@ -396,6 +396,14 @@ static size_t buildPacket(
 // ------------------------------------------------------------
 
 static int pendingVolumeDelta[MAX_ZONES] = {};
+
+// Absolute volume from KNX DPT 5.001.
+// Multiple fast slider updates are coalesced: only the newest
+// requested value needs to be sent when the 200 ms TCP interval
+// becomes available.
+static bool pendingAbsoluteVolumeKnown[MAX_ZONES] = {};
+static uint8_t pendingAbsoluteVolume[MAX_ZONES] = {};
+
 static portMUX_TYPE volumeMux = portMUX_INITIALIZER_UNLOCKED;
 static bool volumeGetRequested[MAX_ZONES] = {};
 
@@ -404,6 +412,13 @@ static bool volumeGetRequested[MAX_ZONES] = {};
 // an old AXX+VOL state while the new state is still in flight.
 static bool optimisticVolumeKnown[MAX_ZONES] = {};
 static uint8_t optimisticVolume[MAX_ZONES] = {};
+
+// Continuous KNX DPT 3.007 dimming.
+// direction: +1 = UP, -1 = DOWN, 0 = stopped.
+static int8_t volumeDimDirection[MAX_ZONES] = {};
+static uint32_t volumeDimLastStep[MAX_ZONES] = {};
+static const uint32_t VOLUME_DIM_INTERVAL_MS = 200;
+static const int VOLUME_DIM_STEP = 5;
 
 static void servicePendingVolume(int zone) {
   if (!validAirScopeZone(zone)) return;
@@ -417,15 +432,51 @@ static void servicePendingVolume(int zone) {
 
   portENTER_CRITICAL(&volumeMux);
   int pending = pendingVolumeDelta[zone];
+  bool absolutePending = pendingAbsoluteVolumeKnown[zone];
+  uint8_t absoluteTarget = pendingAbsoluteVolume[zone];
   portEXIT_CRITICAL(&volumeMux);
 
-  if (pending == 0) return;
+  if (pending == 0 && !absolutePending) return;
 
   uint32_t now = millis();
 
   // Respect Arylic minimum interval between TCP commands.
+  // Keep the latest absolute value queued instead of falling
+  // back to HTTP just because TCP is temporarily rate-limited.
   if (c.lastTx != 0 &&
       now - c.lastTx < MIN_COMMAND_INTERVAL_MS) {
+    return;
+  }
+
+  // Absolute volume does not require reading current volume.
+  // Always give the newest absolute slider position priority.
+  if (absolutePending) {
+    char cmd[20];
+    snprintf(cmd, sizeof(cmd), "MCU+VOL+%03u", absoluteTarget);
+
+    if (airScopeTcpSend(zone, String(cmd))) {
+      portENTER_CRITICAL(&volumeMux);
+
+      // Clear only if this is still the value we just sent.
+      // If another core queued a newer slider position while
+      // sending, leave that newer value pending.
+      if (pendingAbsoluteVolumeKnown[zone] &&
+          pendingAbsoluteVolume[zone] == absoluteTarget) {
+        pendingAbsoluteVolumeKnown[zone] = false;
+      }
+
+      portEXIT_CRITICAL(&volumeMux);
+
+      optimisticVolume[zone] = absoluteTarget;
+      optimisticVolumeKnown[zone] = true;
+
+      Serial.printf(
+        "[VOL][airScope][TCP ABS QUEUE] zone=%s target=%u\n",
+        zones[zone].name.c_str(),
+        absoluteTarget
+      );
+    }
+
     return;
   }
 
@@ -527,6 +578,85 @@ void airScopeTcpLoop() {
     }
 
     readZone(i);
+
+    // Generate repeated +/-5% steps while a KNX DPT 3.007
+    // dimming command is held active.
+    int dimDirection = 0;
+    uint32_t dimLastStep = 0;
+
+    portENTER_CRITICAL(&volumeMux);
+    dimDirection = volumeDimDirection[i];
+    dimLastStep = volumeDimLastStep[i];
+    portEXIT_CRITICAL(&volumeMux);
+
+    if (dimDirection != 0) {
+      uint32_t now = millis();
+
+      AirScopeTcpState dimState{};
+      bool dimStateKnown =
+        airScopeTcpGetState(i, dimState) &&
+        dimState.volumeKnown;
+
+      int dimBaseVolume = -1;
+
+      if (optimisticVolumeKnown[i]) {
+        dimBaseVolume = (int)optimisticVolume[i];
+      } else if (dimStateKnown) {
+        dimBaseVolume = (int)dimState.volume;
+      }
+
+      // Stop generating relative steps once the volume boundary
+      // has been reached.
+      bool atBoundary =
+        (dimDirection > 0 && dimBaseVolume >= 100) ||
+        (dimDirection < 0 && dimBaseVolume == 0);
+
+      if (atBoundary) {
+        portENTER_CRITICAL(&volumeMux);
+        volumeDimDirection[i] = 0;
+        pendingVolumeDelta[i] = 0;
+        portEXIT_CRITICAL(&volumeMux);
+
+        Serial.printf(
+          "[VOL][airScope][TCP DIM] zone=%s AUTO STOP boundary=%d\n",
+          zones[i].name.c_str(),
+          dimBaseVolume
+        );
+
+      } else {
+        // While the initial MCU+VOL+GET is still outstanding,
+        // do not accumulate another DIM step. This prevents the
+        // first movement from becoming +10/-10 instead of +/-5.
+        bool waitingForInitialVolume =
+          !dimStateKnown && volumeGetRequested[i];
+
+        // Continuous DIM must never stack another +/-5 step
+        // while the previous relative step is still pending.
+        // This also prevents the first movement after VOL+GET
+        // from becoming +/-10.
+        int dimPending = 0;
+
+        portENTER_CRITICAL(&volumeMux);
+        dimPending = pendingVolumeDelta[i];
+        portEXIT_CRITICAL(&volumeMux);
+
+        if (!waitingForInitialVolume &&
+            dimPending == 0 &&
+            (dimLastStep == 0 ||
+             now - dimLastStep >= VOLUME_DIM_INTERVAL_MS)) {
+
+          if (airScopeTcpQueueVolumeStep(
+                i,
+                dimDirection * VOLUME_DIM_STEP)) {
+
+            portENTER_CRITICAL(&volumeMux);
+            volumeDimLastStep[i] = now;
+            portEXIT_CRITICAL(&volumeMux);
+          }
+        }
+      }
+    }
+
     servicePendingVolume(i);
   }
 }
@@ -535,6 +665,44 @@ bool airScopeTcpConnected(int zone) {
   if (!validAirScopeZone(zone)) return false;
 
   return connections[zone].client.connected();
+}
+
+bool airScopeTcpStartVolumeDim(int zone, int direction) {
+  if (!validAirScopeZone(zone)) return false;
+
+  if (!connections[zone].client.connected()) {
+    return false;
+  }
+
+  if (direction > 0) direction = 1;
+  else if (direction < 0) direction = -1;
+  else return false;
+
+  portENTER_CRITICAL(&volumeMux);
+  volumeDimDirection[zone] = direction;
+  volumeDimLastStep[zone] = 0;
+  portEXIT_CRITICAL(&volumeMux);
+
+  Serial.printf(
+    "[VOL][airScope][TCP DIM] zone=%s START %s\n",
+    zones[zone].name.c_str(),
+    direction > 0 ? "UP" : "DOWN"
+  );
+
+  return true;
+}
+
+void airScopeTcpStopVolumeDim(int zone) {
+  if (zone < 0 || zone >= MAX_ZONES) return;
+
+  portENTER_CRITICAL(&volumeMux);
+  volumeDimDirection[zone] = 0;
+  portEXIT_CRITICAL(&volumeMux);
+
+  Serial.printf(
+    "[VOL][airScope][TCP DIM] zone=%s STOP\n",
+    zones[zone].name.c_str()
+  );
 }
 
 bool airScopeTcpQueueVolumeStep(int zone, int delta) {
@@ -566,6 +734,74 @@ bool airScopeTcpQueueVolumeStep(int zone, int delta) {
     zones[zone].name.c_str(),
     delta,
     pendingNow
+  );
+
+  return true;
+}
+
+bool airScopeTcpQueueVolumeAbsolute(int zone, uint8_t volume) {
+  if (!validAirScopeZone(zone)) return false;
+
+  AirScopeTcpConnection& c = connections[zone];
+
+  if (!c.client.connected()) {
+    return false;
+  }
+
+  if (volume > 100) volume = 100;
+
+  portENTER_CRITICAL(&volumeMux);
+
+  // Latest absolute slider position wins.
+  pendingAbsoluteVolume[zone] = volume;
+  pendingAbsoluteVolumeKnown[zone] = true;
+
+  // An absolute position supersedes previously queued
+  // relative +/- steps.
+  pendingVolumeDelta[zone] = 0;
+
+  portEXIT_CRITICAL(&volumeMux);
+
+  Serial.printf(
+    "[VOL][airScope][TCP ABS QUEUE] zone=%s queued=%u\\n",
+    zones[zone].name.c_str(),
+    volume
+  );
+
+  return true;
+}
+
+bool airScopeTcpSetVolume(int zone, uint8_t volume) {
+  if (!validAirScopeZone(zone)) return false;
+  if (volume > 100) volume = 100;
+
+  AirScopeTcpConnection& c = connections[zone];
+
+  if (!c.client.connected()) {
+    return false;
+  }
+
+  char cmd[16];
+  snprintf(cmd, sizeof(cmd), "MCU+VOL+%03u", volume);
+
+  if (!airScopeTcpSend(zone, String(cmd))) {
+    return false;
+  }
+
+  // Keep relative +/-5 volume control based on the new absolute value.
+  optimisticVolume[zone] = volume;
+  optimisticVolumeKnown[zone] = true;
+
+  // An absolute command supersedes any queued relative steps
+  // that existed before it.
+  portENTER_CRITICAL(&volumeMux);
+  pendingVolumeDelta[zone] = 0;
+  portEXIT_CRITICAL(&volumeMux);
+
+  Serial.printf(
+    "[VOL][airScope][TCP ABS] zone=%s volume=%u\n",
+    zones[zone].name.c_str(),
+    volume
   );
 
   return true;
