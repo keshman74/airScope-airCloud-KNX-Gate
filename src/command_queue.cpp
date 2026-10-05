@@ -211,8 +211,44 @@ static void execute(const Cmd&c){
 
   if(a=="PLAY")sendNative(z,"setPlayerCmd:resume");
   else if(a=="PAUSE")sendNative(z,"setPlayerCmd:pause");
-  else if(a=="NEXT")sendNative(z,"setPlayerCmd:next");
-  else if(a=="PREVIOUS")sendNative(z,"setPlayerCmd:prev");
+  else if(a=="NEXT"){
+    if(z.type==ZoneType::AirScope){
+      if(airScopeTcpConnected(c.zone) &&
+         airScopeTcpSend(c.zone,"MCU+PLY+NXT")){
+        Serial.printf(
+          "[FAST CONTROL][airScope] NEXT via TCP zone=%s\n",
+          z.name.c_str()
+        );
+      }else{
+        Serial.printf(
+          "[FAST CONTROL][airScope] NEXT TCP unavailable -> HTTP fallback zone=%s\n",
+          z.name.c_str()
+        );
+        sendNative(z,"setPlayerCmd:next");
+      }
+    }else{
+      sendNative(z,"setPlayerCmd:next");
+    }
+  }
+  else if(a=="PREVIOUS"){
+    if(z.type==ZoneType::AirScope){
+      if(airScopeTcpConnected(c.zone) &&
+         airScopeTcpSend(c.zone,"MCU+PLY+PRV")){
+        Serial.printf(
+          "[FAST CONTROL][airScope] PREVIOUS via TCP zone=%s\n",
+          z.name.c_str()
+        );
+      }else{
+        Serial.printf(
+          "[FAST CONTROL][airScope] PREVIOUS TCP unavailable -> HTTP fallback zone=%s\n",
+          z.name.c_str()
+        );
+        sendNative(z,"setPlayerCmd:prev");
+      }
+    }else{
+      sendNative(z,"setPlayerCmd:prev");
+    }
+  }
   else if(a=="VOL_UP"){
     if(z.type==ZoneType::AirScope){
       if(!airScopeVolumeStep(c.zone,z,+5))
