@@ -138,6 +138,30 @@ static void airScopePlayPause(Zone&z){
   }
 }
 
+static bool airScopeVolumeStep(int zone, Zone& z, int delta){
+  if(!airScopeTcpConnected(zone)){
+    Serial.printf(
+      "[VOL][airScope] TCP disconnected -> HTTP fallback zone=%s\n",
+      z.name.c_str()
+    );
+    return false;
+  }
+
+  // Once TCP is connected, volume commands stay entirely on TCP.
+  // The TCP manager accumulates fast +/-5 commands and sends them
+  // respecting the >=200 ms Arylic command interval.
+  if(airScopeTcpQueueVolumeStep(zone, delta)){
+    return true;
+  }
+
+  Serial.printf(
+    "[VOL][airScope] TCP queue failed -> HTTP fallback zone=%s\n",
+    z.name.c_str()
+  );
+
+  return false;
+}
+
 static void execute(const Cmd&c){
   if(c.zone<0||c.zone>=MAX_ZONES||!zones[c.zone].enabled)return;
   Zone&z=zones[c.zone];
@@ -189,8 +213,22 @@ static void execute(const Cmd&c){
   else if(a=="PAUSE")sendNative(z,"setPlayerCmd:pause");
   else if(a=="NEXT")sendNative(z,"setPlayerCmd:next");
   else if(a=="PREVIOUS")sendNative(z,"setPlayerCmd:prev");
-  else if(a=="VOL_UP") sendNative(z,z.type==ZoneType::AirCloud?"setPlayerCmd:RemoteVol++":"setPlayerCmd:vol--");
-  else if(a=="VOL_DOWN") sendNative(z,z.type==ZoneType::AirCloud?"setPlayerCmd:RemoteVol--":"setPlayerCmd:vol%2b%2b");
+  else if(a=="VOL_UP"){
+    if(z.type==ZoneType::AirScope){
+      if(!airScopeVolumeStep(c.zone,z,+5))
+        sendNative(z,"setPlayerCmd:vol%2b%2b");
+    }else{
+      sendNative(z,"setPlayerCmd:RemoteVol++");
+    }
+  }
+  else if(a=="VOL_DOWN"){
+    if(z.type==ZoneType::AirScope){
+      if(!airScopeVolumeStep(c.zone,z,-5))
+        sendNative(z,"setPlayerCmd:vol--");
+    }else{
+      sendNative(z,"setPlayerCmd:RemoteVol--");
+    }
+  }
   else if(a=="INPUT_NEXT")inputNext(z);
   else if(a.startsWith("PRESET_") && z.type==ZoneType::AirScope) sendNative(z,"MCUKeyShortClick:"+a.substring(7));
   else if(a.startsWith("INPUT_")){

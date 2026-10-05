@@ -386,6 +386,119 @@ static size_t buildPacket(
   return totalLength;
 }
 
+
+// ------------------------------------------------------------
+// Pending relative volume control.
+//
+// KNX may generate volume commands faster than the Arylic TCP
+// API permits. We accumulate requested +/- changes here and let
+// airScopeTcpLoop() send them at a safe rate.
+// ------------------------------------------------------------
+
+static int pendingVolumeDelta[MAX_ZONES] = {};
+static portMUX_TYPE volumeMux = portMUX_INITIALIZER_UNLOCKED;
+static bool volumeGetRequested[MAX_ZONES] = {};
+
+// Last absolute volume successfully sent to the device.
+// This prevents fast KNX commands from being calculated from
+// an old AXX+VOL state while the new state is still in flight.
+static bool optimisticVolumeKnown[MAX_ZONES] = {};
+static uint8_t optimisticVolume[MAX_ZONES] = {};
+
+static void servicePendingVolume(int zone) {
+  if (!validAirScopeZone(zone)) return;
+
+  AirScopeTcpConnection& c = connections[zone];
+
+  if (!c.client.connected()) {
+    volumeGetRequested[zone] = false;
+    return;
+  }
+
+  portENTER_CRITICAL(&volumeMux);
+  int pending = pendingVolumeDelta[zone];
+  portEXIT_CRITICAL(&volumeMux);
+
+  if (pending == 0) return;
+
+  uint32_t now = millis();
+
+  // Respect Arylic minimum interval between TCP commands.
+  if (c.lastTx != 0 &&
+      now - c.lastTx < MIN_COMMAND_INTERVAL_MS) {
+    return;
+  }
+
+  AirScopeTcpState state{};
+
+  if (!airScopeTcpGetState(zone, state) ||
+      !state.volumeKnown) {
+
+    // We have a pending KNX volume command but do not yet know
+    // the current A31 volume. Ask once and wait for AXX+VOL.
+    if (!volumeGetRequested[zone]) {
+      if (airScopeTcpSend(zone, "MCU+VOL+GET")) {
+        volumeGetRequested[zone] = true;
+
+        Serial.printf(
+          "[VOL][airScope][TCP] zone=%d initial volume requested\n",
+          zone
+        );
+      }
+    }
+
+    return;
+  }
+
+  volumeGetRequested[zone] = false;
+
+  portENTER_CRITICAL(&volumeMux);
+  int delta = pendingVolumeDelta[zone];
+  portEXIT_CRITICAL(&volumeMux);
+
+  if (delta == 0) return;
+
+  int baseVolume =
+    optimisticVolumeKnown[zone]
+      ? (int)optimisticVolume[zone]
+      : (int)state.volume;
+
+  int target = baseVolume + delta;
+
+  if (target < 0) target = 0;
+  if (target > 100) target = 100;
+
+  // Nothing left to do at the boundary.
+  if (target == baseVolume) {
+    portENTER_CRITICAL(&volumeMux);
+    pendingVolumeDelta[zone] -= delta;
+    portEXIT_CRITICAL(&volumeMux);
+    return;
+  }
+
+  char cmd[20];
+  snprintf(cmd, sizeof(cmd), "MCU+VOL+%03d", target);
+
+  if (airScopeTcpSend(zone, String(cmd))) {
+    portENTER_CRITICAL(&volumeMux);
+    pendingVolumeDelta[zone] -= delta;
+    portEXIT_CRITICAL(&volumeMux);
+
+    // Immediately advance our local expected state.
+    // A later AXX+VOL push remains the authoritative confirmation.
+    optimisticVolume[zone] = static_cast<uint8_t>(target);
+    optimisticVolumeKnown[zone] = true;
+
+    Serial.printf(
+      "[VOL][airScope][TCP QUEUE] zone=%s current=%d delta=%d target=%d\n",
+      zones[zone].name.c_str(),
+      baseVolume,
+      delta,
+      target
+    );
+  }
+}
+
 void airScopeTcpBegin() {
   for (int i = 0; i < MAX_ZONES; i++) {
     connections[i].lastConnectAttempt =
@@ -414,6 +527,7 @@ void airScopeTcpLoop() {
     }
 
     readZone(i);
+    servicePendingVolume(i);
   }
 }
 
@@ -421,6 +535,40 @@ bool airScopeTcpConnected(int zone) {
   if (!validAirScopeZone(zone)) return false;
 
   return connections[zone].client.connected();
+}
+
+bool airScopeTcpQueueVolumeStep(int zone, int delta) {
+  if (!validAirScopeZone(zone)) return false;
+
+  AirScopeTcpConnection& c = connections[zone];
+
+  if (!c.client.connected()) {
+    return false;
+  }
+
+  // Accumulate fast KNX volume commands.
+  // This function runs on the command worker core while
+  // airScopeTcpLoop() consumes the accumulator on another core.
+  portENTER_CRITICAL(&volumeMux);
+
+  int next = pendingVolumeDelta[zone] + delta;
+
+  if (next > 100) next = 100;
+  if (next < -100) next = -100;
+
+  pendingVolumeDelta[zone] = next;
+  int pendingNow = pendingVolumeDelta[zone];
+
+  portEXIT_CRITICAL(&volumeMux);
+
+  Serial.printf(
+    "[VOL][airScope][TCP QUEUE] zone=%s add=%d pending=%d\n",
+    zones[zone].name.c_str(),
+    delta,
+    pendingNow
+  );
+
+  return true;
 }
 
 bool airScopeTcpSend(int zone, const String& command) {

@@ -41,6 +41,12 @@ bool airScopeTcpConnected(int zone);
 // MCU+PLY+PUS
 bool airScopeTcpSend(int zone, const String& command);
 
+// Queue a relative volume change for TCP 8899.
+// Multiple fast changes are accumulated and sent respecting
+// the Arylic >=200 ms command interval.
+bool airScopeTcpQueueVolumeStep(int zone, int delta);
+
+
 // Diagnostics.
 uint32_t airScopeTcpRxPackets(int zone);
 uint32_t airScopeTcpTxPackets(int zone);
