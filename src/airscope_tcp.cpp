@@ -27,6 +27,7 @@ struct AirScopeTcpConnection {
 };
 
 static AirScopeTcpConnection connections[MAX_ZONES];
+static AirScopeTcpState tcpStates[MAX_ZONES];
 
 static bool validAirScopeZone(int zone) {
   if (zone < 0 || zone >= MAX_ZONES) return false;
@@ -124,6 +125,82 @@ static void connectZone(int zone) {
   }
 }
 
+static void handleStatePayload(int zone, const String& payload) {
+  if (zone < 0 || zone >= MAX_ZONES) return;
+
+  AirScopeTcpState& state = tcpStates[zone];
+  bool changed = false;
+
+  if (payload.startsWith("AXX+PLY+")) {
+    int value = payload.substring(8, 11).toInt();
+
+    if (value == 0 || value == 1) {
+      state.playKnown = true;
+      state.playing = (value == 1);
+      state.playUpdatedAt = millis();
+      changed = true;
+
+      Serial.printf(
+        "[TCP STATE][airScope] zone=%d PLAY=%u\n",
+        zone,
+        state.playing ? 1 : 0
+      );
+    }
+  }
+  else if (payload.startsWith("AXX+MUT+")) {
+    int value = payload.substring(8, 11).toInt();
+
+    if (value == 0 || value == 1) {
+      state.muteKnown = true;
+      state.muted = (value == 1);
+      state.muteUpdatedAt = millis();
+      changed = true;
+
+      Serial.printf(
+        "[TCP STATE][airScope] zone=%d MUTE=%u\n",
+        zone,
+        state.muted ? 1 : 0
+      );
+    }
+  }
+  else if (payload.startsWith("AXX+VOL+")) {
+    int value = payload.substring(8, 11).toInt();
+
+    if (value >= 0 && value <= 100) {
+      state.volumeKnown = true;
+      state.volume = static_cast<uint8_t>(value);
+      state.volumeUpdatedAt = millis();
+      changed = true;
+
+      Serial.printf(
+        "[TCP STATE][airScope] zone=%d VOL=%u\n",
+        zone,
+        state.volume
+      );
+    }
+  }
+  else if (payload.startsWith("AXX+PLM+")) {
+    int value = payload.substring(8, 11).toInt();
+
+    if (value >= 0 && value <= 999) {
+      state.modeKnown = true;
+      state.mode = value;
+      state.modeUpdatedAt = millis();
+      changed = true;
+
+      Serial.printf(
+        "[TCP STATE][airScope] zone=%d MODE=%d\n",
+        zone,
+        state.mode
+      );
+    }
+  }
+
+  if (changed) {
+    state.updatedAt = millis();
+  }
+}
+
 static void printPayload(int zone, const uint8_t* data, size_t len) {
   String payload;
   payload.reserve(len + 1);
@@ -144,6 +221,8 @@ static void printPayload(int zone, const uint8_t* data, size_t len) {
     zones[zone].name.c_str(),
     payload.c_str()
   );
+
+  handleStatePayload(zone, payload);
 }
 
 static void parseRxBuffer(int zone) {
@@ -428,4 +507,16 @@ uint32_t airScopeTcpReconnects(int zone) {
 uint32_t airScopeTcpLastRx(int zone) {
   if (zone < 0 || zone >= MAX_ZONES) return 0;
   return connections[zone].lastRx;
+}
+
+
+bool airScopeTcpGetState(int zone, AirScopeTcpState& state) {
+  if (zone < 0 || zone >= MAX_ZONES) return false;
+
+  state = tcpStates[zone];
+
+  return state.playKnown ||
+         state.muteKnown ||
+         state.volumeKnown ||
+         state.modeKnown;
 }

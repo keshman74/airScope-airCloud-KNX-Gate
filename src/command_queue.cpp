@@ -31,8 +31,6 @@ bool commandEnqueue(int zone,const String&a,uint8_t v,const String&u){
                 ok==pdTRUE?"ADD":"FULL",zone,c.action,v);
   return ok==pdTRUE;
 }
-void commandQueueLoop(){}
-
 static const char* scopeInput[]={"wifi","line-in","bluetooth","optical","co-axial","line-in2","udisk","PCUSB"};
 static const char* cloudInput[]={"Network","LineIn","Bluetooth","OpticalIn","CoaxialIn","LineIn2","USBDisk","PCUSB"};
 
@@ -240,6 +238,14 @@ static void pollOneFeedback(){
     Zone&z=zones[i];
     if(!z.enabled || z.type!=ZoneType::AirScope) continue;
     if(!(z.fbPlay.length()||z.fbPause.length()||z.fbMute.length()||z.fbNetwork.length()||z.fbLineIn.length()||z.fbBluetooth.length())) continue;
+    // TCP 8899 is the primary feedback source while connected.
+    // Do not let slower/stale HTTP state overwrite fresh TCP push state.
+    if(airScopeTcpConnected(i)){
+      Serial.printf("[FEEDBACK] zone=%s TCP connected -> HTTP poll skipped\n",
+                    z.name.c_str());
+      return;
+    }
+
     String mode,status,raw;
     if(!airScopePlayerStatus(z.ip,mode,status,&raw)) return;
     String st=status; st.toLowerCase(); int m=mode.toInt();
@@ -260,6 +266,114 @@ static void pollOneFeedback(){
     Serial.printf("[FEEDBACK] zone=%s mode=%s status=%s mute=%d N=%d L=%d B=%d\n",z.name.c_str(),mode.c_str(),status.c_str(),mute,network,lineIn,bluetooth);
     return;
   }
+}
+
+
+static void processTcpFeedback(){
+  static uint32_t lastPlay[MAX_ZONES] = {};
+  static uint32_t lastMute[MAX_ZONES] = {};
+  static uint32_t lastVolume[MAX_ZONES] = {};
+  static uint32_t lastMode[MAX_ZONES] = {};
+
+  for(int i=0;i<MAX_ZONES;i++){
+    Zone& z=zones[i];
+
+    if(!z.enabled || z.type!=ZoneType::AirScope) continue;
+
+    AirScopeTcpState tcp{};
+    if(!airScopeTcpGetState(i,tcp)) continue;
+
+    FeedbackState& old=fbState[i];
+
+    if(tcp.playKnown &&
+       tcp.playUpdatedAt!=0 &&
+       tcp.playUpdatedAt!=lastPlay[i]){
+
+      bool play=tcp.playing;
+      bool pause=!tcp.playing;
+      bool force=!old.valid;
+
+      sendChanged(z.fbPlay,play,old.play,force);
+      sendChanged(z.fbPause,pause,old.pause,force);
+
+      old.play=play;
+      old.pause=pause;
+      old.valid=true;
+
+      lastPlay[i]=tcp.playUpdatedAt;
+
+      Serial.printf(
+        "[TCP FEEDBACK][PLAY] zone=%s play=%d pause=%d\n",
+        z.name.c_str(),play,pause
+      );
+    }
+
+    if(tcp.muteKnown &&
+       tcp.muteUpdatedAt!=0 &&
+       tcp.muteUpdatedAt!=lastMute[i]){
+
+      bool mute=tcp.muted;
+      bool force=!old.valid;
+
+      sendChanged(z.fbMute,mute,old.mute,force);
+
+      old.mute=mute;
+      old.valid=true;
+
+      lastMute[i]=tcp.muteUpdatedAt;
+
+      Serial.printf(
+        "[TCP FEEDBACK][MUTE] zone=%s mute=%d\n",
+        z.name.c_str(),mute
+      );
+    }
+
+    if(tcp.modeKnown &&
+       tcp.modeUpdatedAt!=0 &&
+       tcp.modeUpdatedAt!=lastMode[i]){
+
+      int m=tcp.mode;
+
+      bool network=(m==1||m==2||m==10||m==20||m==31);
+      bool lineIn=(m==40);
+      bool bluetooth=(m==41);
+      bool force=!old.valid;
+
+      sendChanged(z.fbNetwork,network,old.network,force);
+      sendChanged(z.fbLineIn,lineIn,old.lineIn,force);
+      sendChanged(z.fbBluetooth,bluetooth,old.bluetooth,force);
+
+      old.network=network;
+      old.lineIn=lineIn;
+      old.bluetooth=bluetooth;
+      old.valid=true;
+
+      lastMode[i]=tcp.modeUpdatedAt;
+
+      Serial.printf(
+        "[TCP FEEDBACK][MODE] zone=%s mode=%d N=%d L=%d B=%d\n",
+        z.name.c_str(),m,network,lineIn,bluetooth
+      );
+    }
+
+    // Volume state is consumed separately.
+    // No absolute-volume KNX feedback GA exists yet.
+    if(tcp.volumeKnown &&
+       tcp.volumeUpdatedAt!=0 &&
+       tcp.volumeUpdatedAt!=lastVolume[i]){
+
+      lastVolume[i]=tcp.volumeUpdatedAt;
+
+      Serial.printf(
+        "[TCP FEEDBACK][VOL] zone=%s volume=%u\n",
+        z.name.c_str(),tcp.volume
+      );
+    }
+  }
+}
+
+void commandQueueLoop(){
+  processTcpFeedback();
 }
 
 static void task(void*){

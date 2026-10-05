@@ -9,6 +9,30 @@
 void airScopeTcpBegin();
 void airScopeTcpLoop();
 
+struct AirScopeTcpState {
+  bool playKnown = false;
+  bool playing = false;
+  uint32_t playUpdatedAt = 0;
+
+  bool muteKnown = false;
+  bool muted = false;
+  uint32_t muteUpdatedAt = 0;
+
+  bool volumeKnown = false;
+  uint8_t volume = 0;
+  uint32_t volumeUpdatedAt = 0;
+
+  bool modeKnown = false;
+  int mode = -1;
+  uint32_t modeUpdatedAt = 0;
+
+  // Timestamp of the most recent state event of any type.
+  uint32_t updatedAt = 0;
+};
+
+// Latest state learned directly from TCP push messages.
+bool airScopeTcpGetState(int zone, AirScopeTcpState& state);
+
 // Returns true when a persistent TCP connection is established.
 bool airScopeTcpConnected(int zone);
 
